@@ -27,7 +27,6 @@
 
 #include <argp.h>
 #include <err.h>
-#include <errno.h>
 #include <math.h>
 #include <mpfr.h>
 #include <stdbool.h>
@@ -175,32 +174,28 @@ static void _set_bitmask_precision_binary64(const int precision,
 /* global thread identifier */
 static pid_t global_tid = 0;
 
-/* helper data structure to centralize the data used for random number
- * generation */
-static __thread rng_state_t rng_state;
-
-static uint64_t get_random_mask(void) {
-  return get_rand_uint64(&rng_state, &global_tid);
+static uint64_t get_random_mask(bitmask_context_t *ctx) {
+  return get_rand_uint64(&ctx->rng_state, &global_tid);
 }
 
 /* Returns a 32-bits random mask */
-static uint32_t get_random_binary32_mask(void) {
+static uint32_t get_random_binary32_mask(bitmask_context_t *ctx) {
   binary64 mask;
-  mask.u64 = get_random_mask();
+  mask.u64 = get_random_mask(ctx);
   return mask.u32[0];
 }
 
 /* Returns a 64-bits random mask */
-static uint64_t get_random_binary64_mask(void) {
-  uint64_t mask = get_random_mask();
+static uint64_t get_random_binary64_mask(bitmask_context_t *ctx) {
+  uint64_t mask = get_random_mask(ctx);
   return mask;
 }
 
 /* Returns a random mask depending on the type of X */
-#define GET_RANDOM_MASK(X)                                                     \
+#define GET_RANDOM_MASK(X, CTX)                                                \
   _Generic(X, float                                                            \
            : get_random_binary32_mask, double                                  \
-           : get_random_binary64_mask)()
+           : get_random_binary64_mask)(CTX)
 
 /******************** BITMASK ARITHMETIC FUNCTIONS ********************
  * The following set of functions perform the BITMASK operation. Operands
@@ -238,15 +233,15 @@ static uint64_t get_random_binary64_mask(void) {
 
 #define _INEXACT(CTX, B)                                                       \
   do {                                                                         \
+    bitmask_context_t *TMP_CTX = (bitmask_context_t *)CTX;                     \
     const typeof(B.u) sign_size = GET_SIGN_SIZE(B.type);                       \
     const typeof(B.u) exp_size = GET_EXP_SIZE(B.type);                         \
     const typeof(B.u) pman_size = GET_PMAN_SIZE(B.type);                       \
     const typeof(B.u) mask_one = GET_MASK_ONE(B.type);                         \
     const int binary_t = GET_BINARYN_T(B.type);                                \
     typeof(B.u) bitmask = GET_BITMASK(B.type);                                 \
-    _init_rng_state_struct(                                                    \
-        &rng_state, ((bitmask_context_t *)CTX)->choose_seed,                   \
-        (unsigned long long)(((bitmask_context_t *)CTX)->seed), false);        \
+    _init_rng_state_struct(&TMP_CTX->rng_state, TMP_CTX->choose_seed,          \
+                           (unsigned long long)(TMP_CTX->seed), false);        \
     if (FPCLASSIFY(*x) == FP_SUBNORMAL) {                                      \
       /* We must use the CLZ2 variant since bitfield type                      \
            are incompatible with _Generic feature */                           \
@@ -259,7 +254,7 @@ static uint64_t get_random_binary64_mask(void) {
       }                                                                        \
     }                                                                          \
     if (ctx->operator== bitmask_operator_rand) {                               \
-      const typeof(B.u) rand_mask = GET_RANDOM_MASK(B.type);                   \
+      const typeof(B.u) rand_mask = GET_RANDOM_MASK(B.type, TMP_CTX);          \
       B.ieee.mantissa ^= ~bitmask & rand_mask;                                 \
     } else if (ctx->operator== bitmask_operator_one) {                         \
       B.u |= ~bitmask;                                                         \
@@ -399,12 +394,13 @@ static struct argp_option options[] = {
 static error_t parse_opt(int key, char *arg, struct argp_state *state) {
   bitmask_context_t *ctx = (bitmask_context_t *)state->input;
   char *endptr;
+  int error = 0;
   switch (key) {
   case KEY_PREC_B32:
     /* precision for binary32 */
-    errno = 0;
-    int val = strtol(arg, &endptr, 10);
-    if (errno != 0 || val <= 0) {
+    error = 0;
+    int val = interflop_strtol(arg, &endptr, &error);
+    if (error != 0 || val <= 0) {
       logger_error("--%s invalid "
                    "value provided, must be a "
                    "positive integer.",
@@ -415,9 +411,9 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
     break;
   case KEY_PREC_B64:
     /* precision for binary64 */
-    errno = 0;
-    val = strtol(arg, &endptr, 10);
-    if (errno != 0 || val <= 0) {
+    error = 0;
+    val = interflop_strtol(arg, &endptr, &error);
+    if (error != 0 || val <= 0) {
       logger_error("--%s invalid "
                    "value provided, must be a "
                    "positive integer.",
@@ -428,13 +424,16 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
     break;
   case KEY_MODE:
     /* mode */
-    if (strcasecmp(BITMASK_MODE_STR[bitmask_mode_ieee], arg) == 0) {
+    if (interflop_strcasecmp(BITMASK_MODE_STR[bitmask_mode_ieee], arg) == 0) {
       _set_bitmask_mode(bitmask_mode_ieee, ctx);
-    } else if (strcasecmp(BITMASK_MODE_STR[bitmask_mode_full], arg) == 0) {
+    } else if (interflop_strcasecmp(BITMASK_MODE_STR[bitmask_mode_full], arg) ==
+               0) {
       _set_bitmask_mode(bitmask_mode_full, ctx);
-    } else if (strcasecmp(BITMASK_MODE_STR[bitmask_mode_ib], arg) == 0) {
+    } else if (interflop_strcasecmp(BITMASK_MODE_STR[bitmask_mode_ib], arg) ==
+               0) {
       _set_bitmask_mode(bitmask_mode_ib, ctx);
-    } else if (strcasecmp(BITMASK_MODE_STR[bitmask_mode_ob], arg) == 0) {
+    } else if (interflop_strcasecmp(BITMASK_MODE_STR[bitmask_mode_ob], arg) ==
+               0) {
       _set_bitmask_mode(bitmask_mode_ob, ctx);
     } else {
       logger_error("--%s invalid value provided, must be one of: "
@@ -444,13 +443,14 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
     break;
   case KEY_OPERATOR:
     /* operator */
-    if (strcasecmp(BITMASK_OPERATOR_STR[bitmask_operator_zero], arg) == 0) {
+    if (interflop_strcasecmp(BITMASK_OPERATOR_STR[bitmask_operator_zero],
+                             arg) == 0) {
       _set_bitmask_operator(bitmask_operator_zero, ctx);
-    } else if (strcasecmp(BITMASK_OPERATOR_STR[bitmask_operator_one], arg) ==
-               0) {
+    } else if (interflop_strcasecmp(BITMASK_OPERATOR_STR[bitmask_operator_one],
+                                    arg) == 0) {
       _set_bitmask_operator(bitmask_operator_one, ctx);
-    } else if (strcasecmp(BITMASK_OPERATOR_STR[bitmask_operator_rand], arg) ==
-               0) {
+    } else if (interflop_strcasecmp(BITMASK_OPERATOR_STR[bitmask_operator_rand],
+                                    arg) == 0) {
       _set_bitmask_operator(bitmask_operator_rand, ctx);
     } else {
       logger_error("--%s invalid value provided, must be "
@@ -461,10 +461,10 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
     break;
   case KEY_SEED:
     /* set seed */
-    errno = 0;
+    error = 0;
     ctx->choose_seed = true;
-    ctx->seed = strtoull(arg, &endptr, 10);
-    if (errno != 0) {
+    ctx->seed = interflop_strtol(arg, &endptr, &error);
+    if (error != 0) {
       logger_error("--%s invalid value provided, must be an "
                    "integer",
                    key_seed_str);
@@ -590,7 +590,7 @@ INTERFLOP_BITMASK_API(init)(void *context) {
   /* The seed for the RNG is initialized upon the first request for a random
      number */
 
-  _init_rng_state_struct(&rng_state, ctx->choose_seed, ctx->seed, false);
+  _init_rng_state_struct(&ctx->rng_state, ctx->choose_seed, ctx->seed, false);
 
   return interflop_backend_bitmask;
 }
