@@ -10,7 +10,7 @@ if WALL_CFLAGS
 libinterflop_bitmask_la_CFLAGS += -Wall -Wextra -Wno-varargs
 endif
 libinterflop_bitmask_la_LIBADD = @INTERFLOP_STDLIB_PATH@/lib/libinterflop_rng.la
-if BUILD_INTERFLOP_STDLIB
+if LINK_INTERFLOP_STDLIB
 libinterflop_bitmask_la_LIBADD += @INTERFLOP_STDLIB_PATH@/lib/libinterflop_stdlib.la
 endif
 libinterflop_bitmask_la_includedir =$(includedir)/
