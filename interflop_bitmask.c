@@ -38,14 +38,14 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#include "common/float_const.h"
-#include "common/float_struct.h"
-#include "common/float_utils.h"
-#include "common/generic_builtin.h"
-#include "common/logger.h"
-#include "common/options.h"
+#include "interflop-stdlib/common/float_const.h"
+#include "interflop-stdlib/common/float_struct.h"
+#include "interflop-stdlib/common/float_utils.h"
+#include "interflop-stdlib/common/generic_builtin.h"
+#include "interflop-stdlib/common/options.h"
 #include "interflop-stdlib/interflop.h"
 #include "interflop-stdlib/interflop_stdlib.h"
+#include "interflop-stdlib/iostream/logger.h"
 #include "interflop-stdlib/rng/vfc_rng.h"
 #include "interflop_bitmask.h"
 
@@ -579,8 +579,8 @@ INTERFLOP_BITMASK_API(init)(void *context) {
     interflop_div_double : INTERFLOP_BITMASK_API(div_double),
     interflop_cmp_double : NULL,
     interflop_cast_double_to_float : NULL,
-    interflop_madd_float : NULL,
-    interflop_madd_double : NULL,
+    interflop_fma_float : NULL,
+    interflop_fma_double : NULL,
     interflop_enter_function : NULL,
     interflop_exit_function : NULL,
     interflop_user_call : NULL,

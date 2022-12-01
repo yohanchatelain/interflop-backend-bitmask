@@ -3,8 +3,8 @@ ACLOCAL_AMFLAGS=-I m4
 lib_LTLIBRARIES = libinterflop_bitmask.la
 libinterflop_bitmask_la_SOURCES = \
     interflop_bitmask.c \
-    common/logger.c \
-    common/options.c
+    @INTERFLOP_STDLIB_PATH@/include/interflop-stdlib/iostream/logger.c \
+    @INTERFLOP_STDLIB_PATH@/include/interflop-stdlib/common/options.c
 libinterflop_bitmask_la_CFLAGS = -DBACKEND_HEADER="interflop_bitmask" -fno-stack-protector -fPIC -O3
 if WALL_CFLAGS
 libinterflop_bitmask_la_CFLAGS += -Wall -Wextra -Wno-varargs
