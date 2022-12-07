@@ -42,11 +42,19 @@
 #include "interflop-stdlib/common/float_utils.h"
 #include "interflop-stdlib/common/generic_builtin.h"
 #include "interflop-stdlib/common/options.h"
+#include "interflop-stdlib/fma/fmaqApprox.h"
 #include "interflop-stdlib/interflop.h"
 #include "interflop-stdlib/interflop_stdlib.h"
 #include "interflop-stdlib/iostream/logger.h"
 #include "interflop-stdlib/rng/vfc_rng.h"
 #include "interflop_bitmask.h"
+
+/* Disable thread safety for RNG required for Valgrind */
+#ifdef RNG_THREAD_SAFE
+#define TLS __thread
+#else
+#define TLS
+#endif
 
 typedef enum {
   KEY_PREC_B32,
@@ -77,16 +85,6 @@ static const char *BITMASK_OPERATOR_STR[] = {[bitmask_operator_zero] = "zero",
                                              [bitmask_operator_one] = "one",
                                              [bitmask_operator_rand] = "rand"};
 
-/* define default environment variables and default parameters */
-#define BITMASK_PRECISION_BINARY32_MIN 1
-#define BITMASK_PRECISION_BINARY64_MIN 1
-#define BITMASK_PRECISION_BINARY32_MAX FLOAT_PMAN_SIZE
-#define BITMASK_PRECISION_BINARY64_MAX DOUBLE_PMAN_SIZE
-#define BITMASK_PRECISION_BINARY32_DEFAULT FLOAT_PMAN_SIZE
-#define BITMASK_PRECISION_BINARY64_DEFAULT DOUBLE_PMAN_SIZE
-#define BITMASK_OPERATOR_DEFAULT bitmask_operator_zero
-#define BITMASK_MODE_DEFAULT bitmask_mode_ob
-
 #define GET_BINARYN_T(X)                                                       \
   _Generic(X, float : ctx->binary32_precision, double : ctx->binary64_precision)
 
@@ -95,7 +93,9 @@ typedef enum {
   bitmask_add = '+',
   bitmask_sub = '-',
   bitmask_mul = '*',
-  bitmask_div = '/'
+  bitmask_div = '/',
+  bitmask_fma = 'f',
+  bitmask_cast = 'c',
 } bitmask_operations;
 
 static float _bitmask_binary32_binary_op(float a, float b,
@@ -167,6 +167,25 @@ static void _set_bitmask_precision_binary64(const int precision,
                          (typeof(binary64_bitmask))0, (double)0);
 }
 
+static void _set_bitmask_daz(bool daz, bitmask_context_t *ctx) {
+  ctx->daz = daz;
+}
+
+static void _set_bitmask_ftz(bool ftz, bitmask_context_t *ctx) {
+  ctx->ftz = ftz;
+}
+
+static void _set_bitmask_seed(uint64_t seed, bitmask_context_t *ctx) {
+  ctx->seed = seed;
+  ctx->choose_seed = true;
+}
+
+const char *INTERFLOP_BITMASK_API(get_backend_name)(void) { return "bitmask"; }
+
+const char *INTERFLOP_BITMASK_API(get_backend_version)(void) {
+  return "1.x-dev";
+}
+
 /******************** BITMASK RANDOM FUNCTIONS ********************
  * The following functions are used to calculate the random bitmask
  ***************************************************************/
@@ -174,20 +193,36 @@ static void _set_bitmask_precision_binary64(const int precision,
 /* global thread identifier */
 static pid_t global_tid = 0;
 
-static uint64_t get_random_mask(bitmask_context_t *ctx) {
-  return get_rand_uint64(&ctx->rng_state, &global_tid);
+/* helper data structure to centralize the data used for random number
+ * generation */
+static TLS rng_state_t rng_state;
+/* copy */
+static TLS rng_state_t __rng_state;
+
+/* Function used by Verrou to save the */
+/* current rng state and replace it by the new seed */
+void bitmask_push_seed(uint64_t seed) {
+  __rng_state = rng_state;
+  _init_rng_state_struct(&rng_state, true, seed, false);
+}
+
+/* Function used by Verrou to restore the copied rng state */
+void bitmask_pop_seed() { rng_state = __rng_state; }
+
+static uint64_t get_random_mask() {
+  return get_rand_uint64(&rng_state, &global_tid);
 }
 
 /* Returns a 32-bits random mask */
-static uint32_t get_random_binary32_mask(bitmask_context_t *ctx) {
+static uint32_t get_random_binary32_mask() {
   binary64 mask;
-  mask.u64 = get_random_mask(ctx);
+  mask.u64 = get_random_mask();
   return mask.u32[0];
 }
 
 /* Returns a 64-bits random mask */
-static uint64_t get_random_binary64_mask(bitmask_context_t *ctx) {
-  uint64_t mask = get_random_mask(ctx);
+static uint64_t get_random_binary64_mask() {
+  uint64_t mask = get_random_mask();
   return mask;
 }
 
@@ -204,6 +239,17 @@ static uint64_t get_random_binary64_mask(bitmask_context_t *ctx) {
 
 /* perform_bin_op: applies the binary operator (op) to (a) and (b) */
 /* and stores the result in (res) */
+#define PERFORM_UNARY_OP(OP, RES, A)                                           \
+  switch (OP) {                                                                \
+  case bitmask_cast:                                                           \
+    RES = (float)(A);                                                          \
+    break;                                                                     \
+  default:                                                                     \
+    logger_error("invalid operator %c", OP);                                   \
+  };
+
+/* perform_bin_op: applies the binary operator (op) to (a) and (b) */
+/* and stores the result in (res) */
 #define PERFORM_BIN_OP(OP, RES, A, B)                                          \
   switch (OP) {                                                                \
   case bitmask_add:                                                            \
@@ -217,6 +263,17 @@ static uint64_t get_random_binary64_mask(bitmask_context_t *ctx) {
     break;                                                                     \
   case bitmask_div:                                                            \
     RES = (A) / (B);                                                           \
+    break;                                                                     \
+  default:                                                                     \
+    logger_error("invalid operator %c", OP);                                   \
+  };
+
+/* perform_bin_op: applies the binary operator (op) to (a) and (b) */
+/* and stores the result in (res) */
+#define PERFORM_TERNARY_OP(OP, RES, A, B, C)                                   \
+  switch (OP) {                                                                \
+  case bitmask_fma:                                                            \
+    RES = fmaApprox(A, B, C);                                                  \
     break;                                                                     \
   default:                                                                     \
     logger_error("invalid operator %c", OP);                                   \
@@ -240,7 +297,7 @@ static uint64_t get_random_binary64_mask(bitmask_context_t *ctx) {
     const typeof(B.u) mask_one = GET_MASK_ONE(B.type);                         \
     const int binary_t = GET_BINARYN_T(B.type);                                \
     typeof(B.u) bitmask = GET_BITMASK(B.type);                                 \
-    _init_rng_state_struct(&TMP_CTX->rng_state, TMP_CTX->choose_seed,          \
+    _init_rng_state_struct(&rng_state, TMP_CTX->choose_seed,                   \
                            (unsigned long long)(TMP_CTX->seed), false);        \
     if (FPCLASSIFY(*x) == FP_SUBNORMAL) {                                      \
       /* We must use the CLZ2 variant since bitfield type                      \
@@ -289,6 +346,28 @@ static void _inexact_binary64(void *context, double *x) {
 #define _INEXACT_BINARYN(CTX, X)                                               \
   _Generic(X, float * : _inexact_binary32, double * : _inexact_binary64)(CTX, X)
 
+#define _BITMASK_UNARY_OP(A, OP, CTX)                                          \
+  {                                                                            \
+    bitmask_context_t *TMP_CTX = (bitmask_context_t *)CTX;                     \
+    typeof(A) RES = 0;                                                         \
+    if (TMP_CTX->daz) {                                                        \
+      A = DAZ(A);                                                              \
+    }                                                                          \
+    if (TMP_CTX->mode == bitmask_mode_ib ||                                    \
+        TMP_CTX->mode == bitmask_mode_full) {                                  \
+      _INEXACT_BINARYN(CTX, &A);                                               \
+    }                                                                          \
+    PERFORM_UNARY_OP(OP, RES, A);                                              \
+    if (TMP_CTX->mode == bitmask_mode_ob ||                                    \
+        TMP_CTX->mode == bitmask_mode_full) {                                  \
+      _INEXACT_BINARYN(CTX, &RES);                                             \
+    }                                                                          \
+    if (TMP_CTX->ftz) {                                                        \
+      RES = FTZ(RES);                                                          \
+    }                                                                          \
+    return RES;                                                                \
+  }
+
 #define _BITMASK_BINARY_OP(A, B, OP, CTX)                                      \
   {                                                                            \
     bitmask_context_t *TMP_CTX = (bitmask_context_t *)CTX;                     \
@@ -313,6 +392,42 @@ static void _inexact_binary64(void *context, double *x) {
     return RES;                                                                \
   }
 
+#define _BITMASK_TERNARY_OP(A, B, C, OP, CTX)                                  \
+  {                                                                            \
+    bitmask_context_t *TMP_CTX = (bitmask_context_t *)CTX;                     \
+    typeof(A) RES = 0;                                                         \
+    if (TMP_CTX->daz) {                                                        \
+      A = DAZ(A);                                                              \
+      B = DAZ(B);                                                              \
+      C = DAZ(C);                                                              \
+    }                                                                          \
+    if (TMP_CTX->mode == bitmask_mode_ib ||                                    \
+        TMP_CTX->mode == bitmask_mode_full) {                                  \
+      _INEXACT_BINARYN(CTX, &A);                                               \
+      _INEXACT_BINARYN(CTX, &B);                                               \
+      _INEXACT_BINARYN(CTX, &C);                                               \
+    }                                                                          \
+    PERFORM_TERNARY_OP(OP, RES, A, B, C);                                      \
+    if (TMP_CTX->mode == bitmask_mode_ob ||                                    \
+        TMP_CTX->mode == bitmask_mode_full) {                                  \
+      _INEXACT_BINARYN(CTX, &RES);                                             \
+    }                                                                          \
+    if (TMP_CTX->ftz) {                                                        \
+      RES = FTZ(RES);                                                          \
+    }                                                                          \
+    return RES;                                                                \
+  }
+
+// static float _bitmask_binary32_unary_op(float a, const bitmask_operations op,
+//                                         void *context) {
+//   _BITMASK_UNARY_OP(a, op, context);
+// }
+
+static double _bitmask_binary64_unary_op(double a, const bitmask_operations op,
+                                         void *context) {
+  _BITMASK_UNARY_OP(a, op, context);
+}
+
 static float _bitmask_binary32_binary_op(float a, float b,
                                          const bitmask_operations op,
                                          void *context) {
@@ -323,6 +438,18 @@ static double _bitmask_binary64_binary_op(double a, double b,
                                           const bitmask_operations op,
                                           void *context) {
   _BITMASK_BINARY_OP(a, b, op, context);
+}
+
+static float _bitmask_binary32_ternary_op(float a, float b, float c,
+                                          const bitmask_operations op,
+                                          void *context) {
+  _BITMASK_TERNARY_OP(a, b, c, op, context);
+}
+
+static double _bitmask_binary64_ternary_op(double a, double b, double c,
+                                           const bitmask_operations op,
+                                           void *context) {
+  _BITMASK_TERNARY_OP(a, b, c, op, context);
 }
 
 /******************** BITMASK COMPARE FUNCTIONS ********************
@@ -355,6 +482,11 @@ void INTERFLOP_BITMASK_API(div_float)(float a, float b, float *res,
   *res = _bitmask_binary32_binary_op(a, b, bitmask_div, context);
 }
 
+void INTERFLOP_BITMASK_API(fma_float)(float a, float b, float c, float *res,
+                                      void *context) {
+  *res = _bitmask_binary32_ternary_op(a, b, c, bitmask_fma, context);
+}
+
 void INTERFLOP_BITMASK_API(add_double)(double a, double b, double *res,
                                        void *context) {
   *res = _bitmask_binary64_binary_op(a, b, bitmask_add, context);
@@ -373,6 +505,16 @@ void INTERFLOP_BITMASK_API(mul_double)(double a, double b, double *res,
 void INTERFLOP_BITMASK_API(div_double)(double a, double b, double *res,
                                        void *context) {
   *res = _bitmask_binary64_binary_op(a, b, bitmask_div, context);
+}
+
+void INTERFLOP_BITMASK_API(fma_double)(double a, double b, double c,
+                                       double *res, void *context) {
+  *res = _bitmask_binary64_ternary_op(a, b, c, bitmask_fma, context);
+}
+
+void INTERFLOP_BITMASK_API(cast_double_to_float)(double a, float *res,
+                                                 void *context) {
+  *res = _bitmask_binary64_unary_op(a, bitmask_cast, context);
 }
 
 static struct argp_option options[] = {
@@ -472,11 +614,11 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
     break;
   case KEY_DAZ:
     /* denormal-are-zero */
-    ctx->daz = true;
+    _set_bitmask_daz(true, ctx);
     break;
   case KEY_FTZ:
     /* flush-to-zero */
-    ctx->ftz = true;
+    _set_bitmask_ftz(true, ctx);
     break;
   default:
     return ARGP_ERR_UNKNOWN;
@@ -498,15 +640,26 @@ void INTERFLOP_BITMASK_API(CLI)(int argc, char **argv, void *context) {
   }
 }
 
+void INTERFLOP_BITMASK_API(configure)(bitmask_conf_t conf, void *context) {
+  bitmask_context_t *ctx = (bitmask_context_t *)context;
+  _set_bitmask_seed(conf.seed, ctx);
+  _set_bitmask_precision_binary32(conf.binary32_precision, ctx);
+  _set_bitmask_precision_binary64(conf.binary64_precision, ctx);
+  _set_bitmask_mode(conf.mode, ctx);
+  _set_bitmask_operator(conf.operator, ctx);
+  _set_bitmask_daz(conf.daz, ctx);
+  _set_bitmask_ftz(conf.ftz, ctx);
+}
+
 static void init_context(bitmask_context_t *ctx) {
   ctx->mode = BITMASK_MODE_DEFAULT;
   ctx->operator= BITMASK_OPERATOR_DEFAULT;
   ctx->binary32_precision = BITMASK_PRECISION_BINARY32_DEFAULT;
   ctx->binary64_precision = BITMASK_PRECISION_BINARY64_DEFAULT;
   ctx->choose_seed = false;
-  ctx->seed = 0ULL;
-  ctx->daz = false;
-  ctx->ftz = false;
+  ctx->seed = BITMASK_SEED_DEFAULT;
+  ctx->daz = BITMASK_DAZ_DEFAULT;
+  ctx->ftz = BITMASK_FTZ_DEFAULT;
 }
 
 #define CHECK_IMPL(name)                                                       \
@@ -578,9 +731,10 @@ INTERFLOP_BITMASK_API(init)(void *context) {
     interflop_mul_double : INTERFLOP_BITMASK_API(mul_double),
     interflop_div_double : INTERFLOP_BITMASK_API(div_double),
     interflop_cmp_double : NULL,
-    interflop_cast_double_to_float : NULL,
-    interflop_fma_float : NULL,
-    interflop_fma_double : NULL,
+    interflop_cast_double_to_float :
+        INTERFLOP_BITMASK_API(cast_double_to_float),
+    interflop_fma_float : INTERFLOP_BITMASK_API(fma_float),
+    interflop_fma_double : INTERFLOP_BITMASK_API(fma_double),
     interflop_enter_function : NULL,
     interflop_exit_function : NULL,
     interflop_user_call : NULL,
@@ -590,7 +744,7 @@ INTERFLOP_BITMASK_API(init)(void *context) {
   /* The seed for the RNG is initialized upon the first request for a random
      number */
 
-  _init_rng_state_struct(&ctx->rng_state, ctx->choose_seed, ctx->seed, false);
+  _init_rng_state_struct(&rng_state, ctx->choose_seed, ctx->seed, false);
 
   return interflop_backend_bitmask;
 }
