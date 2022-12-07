@@ -23,4 +23,4 @@ if LINK_INTERFLOP_STDLIB
 libinterflop_bitmask_la_LIBADD += @INTERFLOP_STDLIB_PATH@/lib/libinterflop_stdlib.la
 endif
 libinterflop_bitmask_la_includedir =$(includedir)/
-libinterflop_bitmask_la_HEADER = interflop.h interflop_stdlib.h
+include_HEADER = interflop_bitmask.h
