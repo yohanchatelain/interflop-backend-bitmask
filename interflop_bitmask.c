@@ -42,7 +42,7 @@
 #include "interflop-stdlib/common/float_utils.h"
 #include "interflop-stdlib/common/generic_builtin.h"
 #include "interflop-stdlib/common/options.h"
-#include "interflop-stdlib/fma/fmaqApprox.h"
+#include "interflop-stdlib/fma/interflop_fma.h"
 #include "interflop-stdlib/interflop.h"
 #include "interflop-stdlib/interflop_stdlib.h"
 #include "interflop-stdlib/iostream/logger.h"
@@ -237,6 +237,12 @@ static uint64_t get_random_binary64_mask() {
  * They apply a bitmask to the result
  *******************************************************************/
 
+#define PERFORM_FMA(A, B, C)                                                   \
+  _Generic(A, float                                                            \
+           : interflop_fma_binary32, double                                    \
+           : interflop_fma_binary64, __float128                                \
+           : interflop_fma_binary128)(A, B, C)
+
 /* perform_bin_op: applies the binary operator (op) to (a) and (b) */
 /* and stores the result in (res) */
 #define PERFORM_UNARY_OP(OP, RES, A)                                           \
@@ -273,7 +279,7 @@ static uint64_t get_random_binary64_mask() {
 #define PERFORM_TERNARY_OP(OP, RES, A, B, C)                                   \
   switch (OP) {                                                                \
   case bitmask_fma:                                                            \
-    RES = fmaApprox(A, B, C);                                                  \
+    RES = PERFORM_FMA(A, B, C);                                                \
     break;                                                                     \
   default:                                                                     \
     logger_error("invalid operator %c", OP);                                   \
