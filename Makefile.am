@@ -8,7 +8,8 @@ libinterflop_bitmask_la_SOURCES = \
 libinterflop_bitmask_la_CFLAGS = \
     -DBACKEND_HEADER="interflop_bitmask" \
     -I@INTERFLOP_STDLIB_PATH@/include/ \
-    -fno-stack-protector -O3
+    -fno-stack-protector -flto -O3
+libinterflop_bitmask_la_LDFLAGS = -flto -O3
 if WALL_CFLAGS
 libinterflop_bitmask_la_CFLAGS += -Wall -Wextra -Wno-varargs
 endif
